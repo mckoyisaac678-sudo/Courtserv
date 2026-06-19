@@ -1,0 +1,818 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0, user-scalable=no"/>
+<title>CourtServe Pro</title>
+
+<!-- PWA / iOS home-screen meta -->
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="apple-mobile-web-app-title" content="CourtServe"/>
+<meta name="theme-color" content="#1c1b1a"/>
+<link rel="manifest" href="manifest.json"/>
+<link rel="apple-touch-icon" href="icon.svg"/>
+
+<!-- Supabase client -->
+<script src="https://unpkg.com/@supabase/supabase-js@2"></script>
+
+<!-- React -->
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<!-- Babel for JSX in-browser -->
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+<!-- Type: serif for record/identity text, sans for UI, mono for evidentiary codes -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,600;8..60,700&family=Inter:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent;}
+html,body{height:100%;background:#e9e4d8;}
+body{
+  font-family:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  padding-top:env(safe-area-inset-top);
+  padding-bottom:env(safe-area-inset-bottom);
+  overscroll-behavior:none;
+}
+#root{height:100%;}
+select{-webkit-appearance:none;appearance:none;}
+:focus-visible{outline:2px solid #8a6d3b;outline-offset:2px;}
+@media (prefers-reduced-motion: reduce){*{transition:none !important;animation:none !important;}}
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState, useEffect, useRef, useCallback } = React;
+
+// ── Supabase connection ────────────────────────────────────────────────────
+// Publishable key is safe to expose in client code by design — it can only
+// do what Row Level Security policies allow (see 02_security_policies.sql).
+const SUPABASE_URL = "https://qxntaftuzbwztkualwjp.supabase.co";
+const SUPABASE_PUBLISHABLE_KEY = "sb_publishable__Ssw8Q_SYyPkhG4x2UCxzA__LbK9ghK";
+const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
+
+// ── Colors ── "courthouse record": ink, paper, wax seal ──────────────────────
+const C = {
+  ink:"#1c1b1a", ink2:"#332f2a",
+  brass:"#8a6d3b", brassL:"#a98a52",
+  slate:"#6b6358", slateL:"#9a9186",
+  bg:"#e9e4d8", paper:"#fdfbf6", line:"#dcd5c4",
+  green:"#3d5a3d", amber:"#9a6b1f", red:"#7a1f1f",
+  navy:"#1c1b1a", navy2:"#332f2a", blue:"#8a6d3b", blueL:"#a98a52",
+};
+const serif = "'Source Serif 4', Georgia, serif";
+const mono = "'IBM Plex Mono', monospace";
+
+// ── Utilities ────────────────────────────────────────────────────────────────
+const nowStamp = (offset=0) => new Date(Date.now()+offset).toISOString().slice(0,19).replace("T"," ")+" UTC";
+
+const DOC_TYPES = [
+  "Civil Summons","Subpoena","Notice of Hearing","Order to Show Cause",
+  "Restraining Order","Eviction Notice","Divorce Petition","Custody Order","Judgment Lien",
+];
+
+const STATUS_PILL = {
+  verified:      {label:"Verified",       bg:"#e3e9dd", color:"#3d5a3d"},
+  manual_review: {label:"Manual Review",  bg:"#f1e6cf", color:"#9a6b1f"},
+  confirmed:     {label:"Confirmed",      bg:"#e3e9dd", color:"#3d5a3d"},
+  rejected:      {label:"Rejected",       bg:"#ecdcd6", color:"#7a1f1f"},
+  pending:       {label:"Pending",        bg:"#e9e4d8", color:"#6b6358"},
+  failed_match:  {label:"Failed Match",   bg:"#ecdcd6", color:"#7a1f1f"},
+};
+
+// ── Shared UI ────────────────────────────────────────────────────────────────
+function StatusPill({status}) {
+  const p = STATUS_PILL[status] || STATUS_PILL.pending;
+  return <span style={{display:"inline-flex",alignItems:"center",fontSize:11,fontWeight:700,
+    letterSpacing:"0.04em",textTransform:"uppercase",
+    padding:"4px 11px",borderRadius:3,background:p.bg,color:p.color,
+    border:`1px solid ${p.color}22`}}>{p.label}</span>;
+}
+
+function Btn({children, onClick, variant="primary", style={}, disabled=false}) {
+  const v = {
+    primary:{background:C.ink, color:C.paper},
+    ghost:  {background:C.paper, color:C.ink, border:`1px solid ${C.line}`},
+    danger: {background:C.red,  color:C.paper},
+  };
+  return <button onClick={disabled?undefined:onClick} style={{
+    border:"none",borderRadius:4,padding:"14px 18px",fontSize:14,fontWeight:600,
+    letterSpacing:"0.01em",cursor:disabled?"not-allowed":"pointer",width:"100%",
+    fontFamily:"'Inter',sans-serif",
+    transition:"opacity .12s",opacity:disabled?0.5:1, ...v[variant], ...style
+  }}>{children}</button>;
+}
+
+function Card({children, style={}}) {
+  return <div style={{background:C.paper,borderRadius:6,padding:16,
+    border:`1px solid ${C.line}`,boxShadow:"0 1px 2px rgba(28,27,26,.04)", ...style}}>{children}</div>;
+}
+
+function Field({label, children}) {
+  return <div style={{display:"flex",flexDirection:"column",gap:6,marginBottom:14}}>
+    <label style={{fontSize:11,fontWeight:600,color:C.slate,textTransform:"uppercase",letterSpacing:"0.05em"}}>{label}</label>
+    {children}
+  </div>;
+}
+
+const iStyle = {fontFamily:"'Inter',sans-serif",fontSize:15,color:C.ink,border:`1px solid ${C.line}`,
+  borderRadius:4,padding:"12px 14px",background:C.paper,width:"100%",outline:"none"};
+
+function Input({value, onChange, placeholder, mono:isMono=false, type="text"}) {
+  return <input type={type} value={value} onChange={e=>onChange(e.target.value)} placeholder={placeholder}
+    style={{...iStyle, fontFamily: isMono?mono:"'Inter',sans-serif"}}
+    onFocus={e=>{e.target.style.borderColor=C.brass;e.target.style.boxShadow="0 0 0 3px rgba(138,109,59,.15)";}}
+    onBlur={e=>{e.target.style.borderColor=C.line;e.target.style.boxShadow="none";}}/>;
+}
+
+function Select({value, onChange, options}) {
+  return <select value={value} onChange={e=>onChange(e.target.value)} style={iStyle}>
+    {options.map(o=><option key={o}>{o}</option>)}
+  </select>;
+}
+
+function LoadingScreen({label}) {
+  return <div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",
+    flexDirection:"column",gap:10,padding:40}}>
+    <div style={{width:28,height:28,border:`3px solid ${C.line}`,borderTopColor:C.brass,
+      borderRadius:"50%",animation:"spin 0.8s linear infinite"}}/>
+    <style>{"@keyframes spin{to{transform:rotate(360deg)}}"}</style>
+    <div style={{fontSize:13,color:C.slate}}>{label||"Loading…"}</div>
+  </div>;
+}
+
+// ── Login Screen ───────────────────────────────────────────────────────────
+function LoginScreen({onLoggedIn}) {
+  const [email,setEmail] = useState("");
+  const [password,setPassword] = useState("");
+  const [busy,setBusy] = useState(false);
+  const [error,setError] = useState("");
+
+  async function handleLogin() {
+    setError(""); setBusy(true);
+    const { data, error } = await sb.auth.signInWithPassword({ email: email.trim(), password });
+    setBusy(false);
+    if (error) { setError(error.message); return; }
+    onLoggedIn(data.session);
+  }
+
+  return (
+    <div style={{flex:1,display:"flex",flexDirection:"column",justifyContent:"center",
+      padding:24,gap:18,maxWidth:420,margin:"0 auto",width:"100%"}}>
+      <div style={{textAlign:"center",marginBottom:8}}>
+        <div style={{width:52,height:52,borderRadius:"50%",margin:"0 auto 14px",
+          border:`1.5px solid ${C.brass}`,display:"flex",alignItems:"center",justifyContent:"center",
+          fontWeight:600,fontSize:18,fontFamily:serif,color:C.brass}}>CS</div>
+        <h1 style={{fontSize:24,fontWeight:600,fontFamily:serif,color:C.ink}}>CourtServe Pro</h1>
+        <p style={{fontSize:12,color:C.slate,marginTop:4,textTransform:"uppercase",letterSpacing:"0.06em"}}>
+          Secure Sign-In
+        </p>
+      </div>
+      <Card>
+        <Field label="Email">
+          <Input value={email} onChange={setEmail} placeholder="you@agency.gov" type="email"/>
+        </Field>
+        <Field label="Password">
+          <Input value={password} onChange={setPassword} placeholder="••••••••" type="password"/>
+        </Field>
+        {error && <div style={{fontSize:12,color:C.red,marginBottom:10}}>{error}</div>}
+        <Btn onClick={handleLogin} disabled={busy || !email.trim() || !password}>
+          {busy ? "Signing in…" : "Sign In"}
+        </Btn>
+      </Card>
+      <p style={{fontSize:11,color:C.slateL,textAlign:"center",lineHeight:1.5}}>
+        Access is restricted to authorized court personnel.<br/>
+        Contact your agency administrator for an account.
+      </p>
+    </div>
+  );
+}
+
+// ── Camera capture helper ─────────────────────────────────────────────────
+function useCameraCapture() {
+  const videoRef = useRef(null);
+  const streamRef = useRef(null);
+
+  async function start(facingMode="environment") {
+    const stream = await navigator.mediaDevices.getUserMedia({video:{facingMode}, audio:false});
+    streamRef.current = stream;
+    if (videoRef.current) { videoRef.current.srcObject = stream; await videoRef.current.play(); }
+  }
+  function stop() {
+    if (streamRef.current) { streamRef.current.getTracks().forEach(t=>t.stop()); streamRef.current=null; }
+  }
+  function capture() {
+    const video = videoRef.current;
+    const canvas = document.createElement("canvas");
+    canvas.width = video.videoWidth; canvas.height = video.videoHeight;
+    canvas.getContext("2d").drawImage(video,0,0);
+    return canvas.toDataURL("image/jpeg", 0.85); // base64 data URL
+  }
+  return { videoRef, start, stop, capture };
+}
+
+// ── Identity Verification Modal ───────────────────────────────────────────
+// Step 1: scan recipient's ID (driver's license / state ID)
+// Step 2: live selfie capture
+// Step 3: send both to the verify-identity Edge Function (server-side only —
+//         the ID-verification vendor's API key never reaches this browser code)
+// On match: images are never stored, only the pass/fail result is kept.
+// On no-match / refusal: a single fallback photo is uploaded for clerk review.
+function IdentityVerificationModal({serviceAttemptId, onResolved, onClose}) {
+  const [step, setStep] = useState("intro"); // intro | scan-id | scan-selfie | submitting | result | denied
+  const [idImage, setIdImage] = useState(null);
+  const [selfieImage, setSelfieImage] = useState(null);
+  const [resultMsg, setResultMsg] = useState(null);
+  const cam = useCameraCapture();
+
+  useEffect(() => () => cam.stop(), []);
+
+  async function beginIdScan() {
+    setStep("scan-id");
+    try { await cam.start("environment"); }
+    catch(e) { setStep("denied"); }
+  }
+  function captureId() {
+    setIdImage(cam.capture());
+    cam.stop();
+    beginSelfieScan();
+  }
+  async function beginSelfieScan() {
+    setStep("scan-selfie");
+    try { await cam.start("user"); }
+    catch(e) { setStep("denied"); }
+  }
+
+  async function captureSelfieAndSubmit() {
+    const selfie = cam.capture();
+    setSelfieImage(selfie);
+    cam.stop();
+    setStep("submitting");
+
+    try {
+      const { data, error } = await sb.functions.invoke("verify-identity", {
+        body: {
+          idImageBase64: idImage,
+          selfieImageBase64: selfie,
+          serviceAttemptId,
+        },
+      });
+      if (error) throw error;
+
+      if (data.matchResult === "match") {
+        setResultMsg({ ok:true, text:"Identity confirmed — recipient matches government ID on file." });
+        setStep("result");
+        setTimeout(()=>onResolved({status:"verified", verificationResultId:data.verificationResultId}), 1600);
+      } else {
+        // No match / error → escalate to human review, upload the one fallback photo
+        await uploadFallbackPhoto(selfie, data.verificationResultId);
+        setResultMsg({ ok:false, text:"Could not confirm a match automatically. This attempt has been flagged for clerk review." });
+        setStep("result");
+        setTimeout(()=>onResolved({status:"manual_review", verificationResultId:data.verificationResultId}), 1800);
+      }
+    } catch (e) {
+      setResultMsg({ ok:false, text:"Verification service error. This attempt has been flagged for clerk review." });
+      setStep("result");
+      setTimeout(()=>onResolved({status:"manual_review", verificationResultId:null}), 1800);
+    }
+  }
+
+  async function uploadFallbackPhoto(selfieDataUrl, verificationResultId) {
+    if (!verificationResultId) return;
+    try {
+      const blob = await (await fetch(selfieDataUrl)).blob();
+      const path = `review-photos/${serviceAttemptId}.jpg`;
+      const { error: uploadError } = await sb.storage.from("review-photos").upload(path, blob, { upsert:true, contentType:"image/jpeg" });
+      if (!uploadError) {
+        await sb.from("verification_results").update({ fallback_photo_path: path }).eq("id", verificationResultId);
+      }
+    } catch(_) { /* non-fatal — clerk can still see the failed result without a photo */ }
+  }
+
+  function handleRefused() {
+    // Recipient won't cooperate with the scan at all — still capture a photo
+    // for the human-review fallback path described to the user.
+    setStep("scan-selfie-only-refusal");
+    cam.start("user").catch(()=>setStep("denied"));
+  }
+  async function captureRefusalPhoto() {
+    const photo = cam.capture();
+    cam.stop();
+    setStep("submitting");
+    // Create a verification_results row directly marked no_match, then attach photo
+    const { data, error } = await sb.from("verification_results").insert({
+      service_attempt_id: serviceAttemptId,
+      vendor: "manual",
+      match_result: "no_match",
+    }).select().single();
+    if (!error) await uploadFallbackPhoto(photo, data.id);
+    await sb.from("service_attempts").update({ status:"manual_review" }).eq("id", serviceAttemptId);
+    setResultMsg({ ok:false, text:"Recipient declined verification. Flagged for clerk review with photo on file." });
+    setStep("result");
+    setTimeout(()=>onResolved({status:"manual_review", verificationResultId:data?.id||null}), 1800);
+  }
+
+  return (
+    <div style={{position:"fixed",inset:0,background:"rgba(28,27,26,.88)",zIndex:100,
+      display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
+      <div style={{background:C.paper,borderRadius:8,width:"100%",maxWidth:440,overflow:"hidden",border:`1px solid ${C.line}`}}>
+        <div style={{background:C.navy,padding:"18px 20px"}}>
+          <div style={{color:C.paper,fontSize:17,fontWeight:600,fontFamily:serif}}>Recipient Identity Verification</div>
+          <div style={{color:C.slateL,fontSize:12,marginTop:4}}>
+            Scans the recipient's government ID and matches it to a live photo.
+          </div>
+        </div>
+
+        {step==="intro" && (
+          <div style={{padding:"20px",display:"flex",flexDirection:"column",gap:12}}>
+            <p style={{fontSize:13,color:C.slate,lineHeight:1.5}}>
+              You'll scan the recipient's driver's license or state ID, then take a live photo to confirm
+              it's the same person. Nothing is stored unless the match fails — in that case a single
+              photo is saved for court staff to review.
+            </p>
+            <Btn onClick={beginIdScan}>Scan Recipient's ID</Btn>
+            <Btn variant="ghost" onClick={handleRefused}>Recipient declines to show ID</Btn>
+            <Btn variant="ghost" onClick={onClose}>Cancel</Btn>
+          </div>
+        )}
+
+        {(step==="scan-id" || step==="scan-selfie" || step==="scan-selfie-only-refusal") && (
+          <>
+            <div style={{position:"relative",width:"100%",aspectRatio:"4/3",background:"#000",overflow:"hidden"}}>
+              <video ref={cam.videoRef} muted playsInline autoPlay
+                style={{width:"100%",height:"100%",objectFit:"cover",
+                  transform:step==="scan-id"?"none":"scaleX(-1)"}}/>
+            </div>
+            <div style={{padding:"18px 20px",display:"flex",flexDirection:"column",gap:10}}>
+              <p style={{fontSize:13,color:C.slate,textAlign:"center"}}>
+                {step==="scan-id" && "Position the ID clearly in frame, then capture."}
+                {step==="scan-selfie" && "Now position the recipient's face, then capture."}
+                {step==="scan-selfie-only-refusal" && "Capture a photo of the recipient for the case file."}
+              </p>
+              {step==="scan-id" && <Btn onClick={captureId}>Capture ID</Btn>}
+              {step==="scan-selfie" && <Btn onClick={captureSelfieAndSubmit}>Capture Photo &amp; Verify</Btn>}
+              {step==="scan-selfie-only-refusal" && <Btn onClick={captureRefusalPhoto}>Capture Photo</Btn>}
+              <Btn variant="ghost" onClick={()=>{cam.stop();onClose();}}>Cancel</Btn>
+            </div>
+          </>
+        )}
+
+        {step==="submitting" && <LoadingScreen label="Verifying identity…"/>}
+
+        {step==="result" && resultMsg && (
+          <div style={{padding:"24px 20px",display:"flex",flexDirection:"column",gap:10,alignItems:"center",textAlign:"center"}}>
+            <div style={{width:44,height:44,borderRadius:"50%",
+              border:`2px solid ${resultMsg.ok?C.green:C.amber}`,
+              display:"flex",alignItems:"center",justifyContent:"center",
+              color:resultMsg.ok?C.green:C.amber,fontSize:20}}>{resultMsg.ok?"✓":"!"}</div>
+            <p style={{fontSize:13,color:C.ink,lineHeight:1.5}}>{resultMsg.text}</p>
+          </div>
+        )}
+
+        {step==="denied" && (
+          <div style={{padding:"24px 20px",display:"flex",flexDirection:"column",gap:12,textAlign:"center"}}>
+            <p style={{fontSize:13,color:C.red}}>Camera access denied or unavailable.</p>
+            <Btn variant="ghost" onClick={onClose}>Close</Btn>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Serve Screen ──────────────────────────────────────────────────────────
+function ServeScreen({profile, onServed}) {
+  const [docType,setDocType] = useState(DOC_TYPES[0]);
+  const [caseNumber,setCaseNumber] = useState("");
+  const [recipient,setRecipient] = useState("");
+  const [address,setAddress] = useState("");
+  const [showVerify,setShowVerify] = useState(false);
+  const [pendingAttemptId,setPendingAttemptId] = useState(null);
+  const [toast,setToast] = useState(null);
+  const [errors,setErrors] = useState({});
+  const [busy,setBusy] = useState(false);
+
+  function showToast(msg,ok=true) {
+    setToast({msg,ok}); setTimeout(()=>setToast(null),3500);
+  }
+  function validate() {
+    const e={};
+    if (!caseNumber.trim()) e.caseNumber="Case number is required.";
+    if (!recipient.trim())  e.recipient="Recipient name is required.";
+    setErrors(e); return Object.keys(e).length===0;
+  }
+
+  async function handleServe() {
+    if (!validate()) return;
+    setBusy(true);
+    try {
+      // 1. Create (or reuse) the case record
+      const { data: caseRow, error: caseErr } = await sb.from("cases").insert({
+        agency_id: profile.agency_id,
+        case_number: caseNumber.trim(),
+        case_type: docType,
+        recipient_name: recipient.trim(),
+        recipient_address: address.trim() || null,
+        created_by: profile.id,
+      }).select().single();
+      if (caseErr) throw caseErr;
+
+      // 2. Create the service attempt
+      const { data: attemptRow, error: attemptErr } = await sb.from("service_attempts").insert({
+        case_id: caseRow.id,
+        agency_id: profile.agency_id,
+        server_id: profile.id,
+        status: "pending",
+        service_type: "personal",
+      }).select().single();
+      if (attemptErr) throw attemptErr;
+
+      setPendingAttemptId(attemptRow.id);
+      setShowVerify(true);
+    } catch (e) {
+      showToast("Could not create service record: " + e.message, false);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function handleVerificationResolved({status}) {
+    setShowVerify(false);
+    setPendingAttemptId(null);
+    setCaseNumber(""); setRecipient(""); setAddress("");
+    showToast(
+      status==="verified" ? "Service recorded — identity verified." : "Service recorded — flagged for clerk review.",
+      status==="verified"
+    );
+    onServed();
+  }
+
+  return (
+    <div style={{flex:1,display:"flex",flexDirection:"column",padding:18,gap:14,overflowY:"auto"}}>
+      {toast && (
+        <div style={{position:"fixed",top:80,left:"50%",transform:"translateX(-50%)",
+          background:toast.ok?C.green:C.amber,color:C.paper,borderRadius:6,
+          padding:"12px 20px",fontSize:13,fontWeight:700,zIndex:300,whiteSpace:"nowrap",
+          boxShadow:"0 4px 16px rgba(0,0,0,.2)"}}>{toast.msg}</div>
+      )}
+      <h2 style={{fontSize:25,fontWeight:600,letterSpacing:"-0.01em",fontFamily:serif,color:C.ink}}>New Service</h2>
+      <p style={{fontSize:13,color:C.slate,lineHeight:1.5,marginTop:-8}}>
+        Fill in the case details, then verify the recipient's identity at time of service.
+      </p>
+      <Card>
+        <Field label="Document type"><Select value={docType} onChange={setDocType} options={DOC_TYPES}/></Field>
+        <Field label="Case number">
+          <Input value={caseNumber} onChange={setCaseNumber} placeholder="e.g. CV-2026-04471" mono/>
+          {errors.caseNumber && <span style={{fontSize:11,color:C.red}}>{errors.caseNumber}</span>}
+        </Field>
+        <Field label="Recipient name">
+          <Input value={recipient} onChange={setRecipient} placeholder="e.g. Jane Doe"/>
+          {errors.recipient && <span style={{fontSize:11,color:C.red}}>{errors.recipient}</span>}
+        </Field>
+        <Field label="Recipient address (optional)">
+          <Input value={address} onChange={setAddress} placeholder="Service address"/>
+        </Field>
+      </Card>
+      <Btn onClick={handleServe} disabled={busy}>{busy?"Creating record…":"Begin Service & Verify Identity"}</Btn>
+      {showVerify && (
+        <IdentityVerificationModal
+          serviceAttemptId={pendingAttemptId}
+          onResolved={handleVerificationResolved}
+          onClose={()=>{setShowVerify(false);}}
+        />
+      )}
+    </div>
+  );
+}
+
+// ── History Screen ────────────────────────────────────────────────────────
+function HistoryScreen({profile, onSelect, refreshKey}) {
+  const [query,setQuery] = useState("");
+  const [attempts,setAttempts] = useState([]);
+  const [loading,setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      setLoading(true);
+      const { data, error } = await sb
+        .from("service_attempts")
+        .select("id, status, attempted_at, cases(case_number, case_type, recipient_name)")
+        .eq("agency_id", profile.agency_id)
+        .order("attempted_at", { ascending:false });
+      if (!cancelled) {
+        setAttempts(error ? [] : data);
+        setLoading(false);
+      }
+    }
+    load();
+    return () => { cancelled = true; };
+  }, [profile.agency_id, refreshKey]);
+
+  const filtered = attempts.filter(a => {
+    const c = a.cases || {};
+    const q = query.toLowerCase();
+    return (c.case_number||"").toLowerCase().includes(q) ||
+           (c.recipient_name||"").toLowerCase().includes(q) ||
+           (c.case_type||"").toLowerCase().includes(q);
+  });
+
+  return (
+    <div style={{flex:1,display:"flex",flexDirection:"column",padding:18,gap:14,overflowY:"auto"}}>
+      <h2 style={{fontSize:25,fontWeight:600,letterSpacing:"-0.01em",fontFamily:serif,color:C.ink}}>Service History</h2>
+      <Input value={query} onChange={setQuery} placeholder="Search by case number, name, or type…"/>
+      {loading ? <LoadingScreen label="Loading service history…"/> : (
+        <Card style={{padding:0}}>
+          {filtered.length===0
+            ? <div style={{padding:"32px 20px",textAlign:"center"}}>
+                <div style={{fontSize:13,color:C.ink,fontWeight:600,fontFamily:serif}}>No matching records</div>
+                <div style={{fontSize:12,color:C.slateL,marginTop:4}}>Try a different case number, name, or document type.</div>
+              </div>
+            : filtered.map((a,i)=>(
+              <div key={a.id} onClick={()=>onSelect(a.id)} style={{
+                display:"flex",justifyContent:"space-between",alignItems:"center",
+                padding:"13px 16px",borderBottom:i<filtered.length-1?`1px solid ${C.line}`:"none",
+                cursor:"pointer",
+              }}>
+                <div>
+                  <div style={{fontFamily:mono,fontSize:12,color:C.brass,fontWeight:600}}>{a.cases?.case_number}</div>
+                  <div style={{fontSize:14,fontWeight:600,margin:"2px 0"}}>{a.cases?.case_type}</div>
+                  <div style={{fontSize:11,color:C.slate}}>{a.cases?.recipient_name} · {new Date(a.attempted_at).toLocaleString()}</div>
+                </div>
+                <StatusPill status={a.status}/>
+              </div>
+            ))}
+        </Card>
+      )}
+    </div>
+  );
+}
+
+// ── Detail Screen ─────────────────────────────────────────────────────────
+function DetailScreen({attemptId, onBack}) {
+  const [attempt,setAttempt] = useState(null);
+  const [verification,setVerification] = useState(null);
+  const [loading,setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      setLoading(true);
+      const { data: a } = await sb.from("service_attempts")
+        .select("*, cases(case_number, case_type, recipient_name, recipient_address)")
+        .eq("id", attemptId).single();
+      const { data: v } = await sb.from("verification_results")
+        .select("*").eq("service_attempt_id", attemptId)
+        .order("created_at", { ascending:false }).limit(1).maybeSingle();
+      if (!cancelled) { setAttempt(a); setVerification(v); setLoading(false); }
+    }
+    if (attemptId) load();
+    return () => { cancelled = true; };
+  }, [attemptId]);
+
+  if (loading) return <LoadingScreen label="Loading record…"/>;
+  if (!attempt) return null;
+  const c = attempt.cases || {};
+
+  return (
+    <div style={{flex:1,display:"flex",flexDirection:"column",padding:18,gap:14,overflowY:"auto"}}>
+      <button onClick={onBack} style={{alignSelf:"flex-start",background:C.paper,
+        border:`1px solid ${C.line}`,borderRadius:4,padding:"8px 14px",fontSize:13,
+        fontWeight:600,cursor:"pointer",color:C.brass}}>‹ Back</button>
+      <div>
+        <h2 style={{fontSize:19,fontWeight:600,letterSpacing:"0",fontFamily:mono,color:C.ink}}>{c.case_number}</h2>
+        <p style={{fontSize:13,color:C.slate,marginTop:4}}>{c.case_type} · {c.recipient_name}</p>
+        <div style={{marginTop:8}}><StatusPill status={attempt.status}/></div>
+      </div>
+
+      <Card style={{padding:0,overflow:"hidden"}}>
+        <div style={{padding:"14px 16px",borderBottom:`1px solid ${C.line}`,
+          display:"flex",justifyContent:"space-between",alignItems:"baseline"}}>
+          <div style={{fontSize:11,fontWeight:700,color:C.slate,letterSpacing:"0.08em",textTransform:"uppercase"}}>Identity Verification</div>
+        </div>
+        <div style={{padding:"16px"}}>
+          {!verification ? (
+            <p style={{fontSize:13,color:C.slateL}}>No verification attempt recorded yet.</p>
+          ) : (
+            <div style={{display:"flex",flexDirection:"column",gap:8}}>
+              <Row label="Result" value={verification.match_result} mono/>
+              <Row label="Vendor" value={verification.vendor} mono/>
+              {verification.confidence_score!=null && <Row label="Confidence" value={Math.round(verification.confidence_score*100)+"%"} mono/>}
+              {verification.id_name_extracted && <Row label="Name on ID" value={verification.id_name_extracted}/>}
+              <Row label="Review status" value={verification.review_decision || "Awaiting clerk review"} mono/>
+            </div>
+          )}
+        </div>
+        <div style={{padding:"10px 16px",background:C.bg,borderTop:`1px solid ${C.line}`,
+          fontSize:10,color:C.slateL,fontFamily:mono,letterSpacing:"0.02em"}}>
+          Attempted {new Date(attempt.attempted_at).toLocaleString()} · record is tamper-evident
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+function Row({label, value, mono:isMono}) {
+  return <div style={{display:"flex",justifyContent:"space-between",fontSize:13}}>
+    <span style={{color:C.slate}}>{label}</span>
+    <span style={{color:C.ink,fontWeight:600,fontFamily:isMono?mono:"inherit"}}>{value}</span>
+  </div>;
+}
+
+// ── Clerk Review Screen ──────────────────────────────────────────────────
+// Where flagged (manual_review) attempts go for human confirmation —
+// the fallback path for failed face matches or recipient refusal.
+function ReviewScreen({profile, onChanged}) {
+  const [items,setItems] = useState([]);
+  const [loading,setLoading] = useState(true);
+  const [photoUrls,setPhotoUrls] = useState({});
+
+  async function load() {
+    setLoading(true);
+    const { data, error } = await sb
+      .from("service_attempts")
+      .select("id, attempted_at, cases(case_number, recipient_name), verification_results(id, match_result, fallback_photo_path, review_decision, confidence_score)")
+      .eq("agency_id", profile.agency_id)
+      .eq("status", "manual_review")
+      .order("attempted_at", { ascending:true });
+    if (!error) {
+      setItems(data);
+      // sign URLs for any fallback photos
+      for (const item of data) {
+        const v = (item.verification_results||[])[0];
+        if (v?.fallback_photo_path) {
+          const { data: signed } = await sb.storage.from("review-photos").createSignedUrl(v.fallback_photo_path, 300);
+          if (signed) setPhotoUrls(prev=>({...prev, [item.id]: signed.signedUrl}));
+        }
+      }
+    }
+    setLoading(false);
+  }
+
+  useEffect(() => { load(); }, [profile.agency_id]);
+
+  async function decide(attempt, decision) {
+    const v = (attempt.verification_results||[])[0];
+    if (v) {
+      await sb.from("verification_results").update({
+        review_decision: decision, reviewed_by: profile.id, reviewed_at: new Date().toISOString(),
+      }).eq("id", v.id);
+    }
+    await sb.from("service_attempts").update({
+      status: decision==="confirmed" ? "confirmed" : "rejected",
+    }).eq("id", attempt.id);
+    await sb.from("audit_log").insert({
+      agency_id: profile.agency_id, actor_id: profile.id,
+      action: "verification.reviewed", target_table: "service_attempts", target_id: attempt.id,
+      detail: { decision },
+    });
+    load();
+    onChanged && onChanged();
+  }
+
+  if (loading) return <LoadingScreen label="Loading review queue…"/>;
+
+  return (
+    <div style={{flex:1,display:"flex",flexDirection:"column",padding:18,gap:14,overflowY:"auto"}}>
+      <h2 style={{fontSize:25,fontWeight:600,letterSpacing:"-0.01em",fontFamily:serif,color:C.ink}}>Clerk Review Queue</h2>
+      <p style={{fontSize:13,color:C.slate,lineHeight:1.5,marginTop:-8}}>
+        Attempts where identity could not be automatically confirmed. Review the photo and case details, then confirm or reject service.
+      </p>
+      {items.length===0 ? (
+        <Card style={{textAlign:"center",padding:"32px 20px"}}>
+          <div style={{fontSize:13,color:C.ink,fontWeight:600,fontFamily:serif}}>Queue is empty</div>
+          <div style={{fontSize:12,color:C.slateL,marginTop:4}}>Nothing currently needs manual review.</div>
+        </Card>
+      ) : items.map(item => {
+        const v = (item.verification_results||[])[0] || {};
+        return (
+          <Card key={item.id}>
+            <div style={{display:"flex",justifyContent:"space-between",marginBottom:10}}>
+              <div>
+                <div style={{fontFamily:mono,fontSize:12,color:C.brass,fontWeight:600}}>{item.cases?.case_number}</div>
+                <div style={{fontSize:14,fontWeight:600}}>{item.cases?.recipient_name}</div>
+              </div>
+              <div style={{fontSize:11,color:C.slate}}>{new Date(item.attempted_at).toLocaleString()}</div>
+            </div>
+            {photoUrls[item.id] && (
+              <img src={photoUrls[item.id]} alt="Recipient photo for review"
+                style={{width:"100%",borderRadius:6,marginBottom:10,border:`1px solid ${C.line}`}}/>
+            )}
+            <div style={{fontSize:12,color:C.slate,marginBottom:12}}>
+              {v.match_result==="no_match" ? "Automated match failed" : v.match_result==="error" ? "Verification service error" : "Recipient declined verification"}
+              {v.confidence_score!=null && ` · confidence ${Math.round(v.confidence_score*100)}%`}
+            </div>
+            <div style={{display:"flex",gap:10}}>
+              <Btn variant="primary" onClick={()=>decide(item,"confirmed")}>Confirm Service</Btn>
+              <Btn variant="danger" onClick={()=>decide(item,"rejected")}>Reject</Btn>
+            </div>
+          </Card>
+        );
+      })}
+    </div>
+  );
+}
+
+// ── App Root ──────────────────────────────────────────────────────────────
+function App() {
+  const [session,setSession] = useState(undefined); // undefined = checking, null = logged out
+  const [profile,setProfile] = useState(null);
+  const [tab,setTab] = useState("serve");
+  const [selectedAttemptId,setSelectedAttemptId] = useState(null);
+  const [refreshKey,setRefreshKey] = useState(0);
+
+  useEffect(() => {
+    sb.auth.getSession().then(({data}) => setSession(data.session));
+    const { data: listener } = sb.auth.onAuthStateChange((_event, sess) => setSession(sess));
+    return () => listener.subscription.unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (!session) { setProfile(null); return; }
+    sb.from("profiles").select("*").eq("id", session.user.id).single()
+      .then(({data}) => setProfile(data));
+  }, [session]);
+
+  function handleSelect(attemptId) { setSelectedAttemptId(attemptId); setTab("detail"); }
+  function handleServed() { setRefreshKey(k=>k+1); setTab("history"); }
+  async function handleLogout() { await sb.auth.signOut(); }
+
+  if (session === undefined) return <div style={{minHeight:"100vh",display:"flex"}}><LoadingScreen label="Loading…"/></div>;
+  if (!session) return <div style={{minHeight:"100vh",display:"flex",background:C.bg}}><LoginScreen onLoggedIn={setSession}/></div>;
+  if (!profile) return <div style={{minHeight:"100vh",display:"flex"}}><LoadingScreen label="Loading profile…"/></div>;
+
+  const canReview = profile.role === "clerk_reviewer" || profile.role === "agency_admin" || profile.role === "superadmin";
+
+  const tabs = [
+    {id:"serve",   label:"Serve",   d:"M12 5v14M5 12h14"},
+    {id:"history", label:"History", d:"M12 8v4l3 3M3 12a9 9 0 1 0 18 0 9 9 0 0 0-18 0z"},
+    ...(canReview ? [{id:"review", label:"Review", d:"M9 12l2 2 4-4M12 3l7 4v5a8 8 0 0 1-7 8 8 8 0 0 1-7-8V7z"}] : []),
+  ];
+
+  return (
+    <div style={{maxWidth:480,margin:"0 auto",minHeight:"100vh",display:"flex",
+      flexDirection:"column",background:C.bg,
+      fontFamily:"'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif"}}>
+
+      {/* Top bar — letterhead */}
+      <div style={{background:C.ink,color:C.paper,padding:"16px 18px",display:"flex",
+        alignItems:"center",gap:12,position:"sticky",top:0,zIndex:50,
+        borderBottom:`3px double ${C.brassL}`}}>
+        <div style={{width:36,height:36,borderRadius:"50%",flexShrink:0,
+          border:`1.5px solid ${C.brassL}`,
+          display:"flex",alignItems:"center",justifyContent:"center",
+          fontWeight:600,fontSize:14,fontFamily:serif,color:C.brassL}}>CS</div>
+        <div style={{flex:1}}>
+          <div style={{fontSize:16,fontWeight:600,fontFamily:serif,letterSpacing:"0.01em"}}>CourtServe Pro</div>
+          <div style={{fontSize:10.5,color:C.slateL,textTransform:"uppercase",letterSpacing:"0.08em",marginTop:1}}>
+            {profile.full_name} · {profile.role.replace("_"," ")}
+          </div>
+        </div>
+        <button onClick={handleLogout} style={{background:"none",border:"none",color:C.slateL,
+          fontSize:11,cursor:"pointer",fontFamily:"'Inter',sans-serif",textDecoration:"underline"}}>
+          Sign out
+        </button>
+      </div>
+
+      {/* Screens */}
+      <div style={{flex:1,display:"flex",flexDirection:"column",overflowY:"auto"}}>
+        {tab==="serve"   && <ServeScreen profile={profile} onServed={handleServed}/>}
+        {tab==="history" && <HistoryScreen profile={profile} onSelect={handleSelect} refreshKey={refreshKey}/>}
+        {tab==="review"  && canReview && <ReviewScreen profile={profile} onChanged={()=>setRefreshKey(k=>k+1)}/>}
+        {tab==="detail"  && <DetailScreen attemptId={selectedAttemptId} onBack={()=>setTab("history")}/>}
+      </div>
+
+      {/* Tab bar */}
+      <div style={{position:"sticky",bottom:0,background:C.paper,borderTop:`1px solid ${C.line}`,
+        display:"flex",padding:"8px 6px calc(env(safe-area-inset-bottom) + 8px)",zIndex:50}}>
+        {tabs.map(t=>(
+          <button key={t.id} onClick={()=>setTab(t.id)} style={{
+            flex:1,border:"none",background:"none",display:"flex",flexDirection:"column",
+            alignItems:"center",gap:3,padding:6,cursor:"pointer",fontFamily:"inherit",
+            color:(tab===t.id||(t.id==="history"&&tab==="detail"))?C.brass:C.slateL,
+          }}>
+            <svg width={22} height={22} fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+              <path d={t.d}/>
+            </svg>
+            <span style={{fontSize:10,fontWeight:600,letterSpacing:"0.02em"}}>{t.label}</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+
+<script>
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("sw.js").catch(()=>{});
+}
+</script>
+</body>
+</html>
